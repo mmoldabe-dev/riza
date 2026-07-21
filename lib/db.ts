@@ -1,14 +1,17 @@
-import { createPool } from "@vercel/postgres";
+import { neon } from "@neondatabase/serverless";
 import { OrderItem, normalizeCatalogKey } from "./parseOrder";
 
 // Accept whichever env var name the connected Postgres provider ends up using
 // (Vercel's own Postgres storage sets POSTGRES_URL; a manually pasted Neon
 // connection string is usually called DATABASE_URL).
-const connectionString =
-  process.env.POSTGRES_URL ?? process.env.DATABASE_URL;
+const connectionString = process.env.POSTGRES_URL ?? process.env.DATABASE_URL;
 
-const pool = createPool({ connectionString });
-const sql = pool.sql;
+if (!connectionString) {
+  throw new Error("POSTGRES_URL or DATABASE_URL must be set");
+}
+
+// neon()'s tagged template returns the rows array directly (not { rows }).
+const sql = neon(connectionString);
 
 let schemaReady: Promise<void> | null = null;
 
@@ -63,7 +66,7 @@ export async function upsertCatalogItems(
 
 export async function getCatalog(chatId: number): Promise<Map<string, OrderItem>> {
   await ensureSchema();
-  const { rows } = await sql`
+  const rows = await sql`
     SELECT name_key, name, price FROM catalog WHERE chat_id = ${chatId};
   `;
   const map = new Map<string, OrderItem>();
@@ -95,7 +98,7 @@ export async function insertOrder(params: {
   rawText: string;
 }): Promise<SavedOrder> {
   await ensureSchema();
-  const { rows } = await sql`
+  const rows = await sql`
     INSERT INTO orders (chat_id, order_date, is_city, items, items_total, delivery_fee, total, raw_text)
     VALUES (
       ${params.chatId},
@@ -124,7 +127,7 @@ export async function insertOrder(params: {
 
 export async function deleteLastOrder(chatId: number): Promise<SavedOrder | null> {
   await ensureSchema();
-  const { rows } = await sql`
+  const rows = await sql`
     DELETE FROM orders
     WHERE id = (
       SELECT id FROM orders WHERE chat_id = ${chatId} ORDER BY created_at DESC LIMIT 1
@@ -158,7 +161,7 @@ export interface DaySummary {
 
 export async function getDaySummary(dateKey: string): Promise<DaySummary> {
   await ensureSchema();
-  const { rows } = await sql`
+  const rows = await sql`
     SELECT id, chat_id, order_date::text AS order_date, is_city, items, items_total, delivery_fee, total
     FROM orders
     WHERE order_date = ${dateKey}
