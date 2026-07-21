@@ -1,7 +1,7 @@
-import { OrderItem, parseNamePriceLine } from "./parseOrder";
+import { CatalogItem, parseNamePriceLine } from "./parseOrder";
 
 export type CatalogParseResult =
-  | { ok: true; items: OrderItem[] }
+  | { ok: true; items: CatalogItem[] }
   | { ok: false; error: string };
 
 /** Parses the body of a /price command: one "Название цена" per line. */
@@ -15,7 +15,7 @@ export function parseCatalogUpdate(text: string): CatalogParseResult {
     return { ok: false, error: "Пустой список. Формат: «Название цена» на каждой строке." };
   }
 
-  const items: OrderItem[] = [];
+  const items: CatalogItem[] = [];
   for (const line of lines) {
     const item = parseNamePriceLine(line);
     if (!item) {

@@ -31,7 +31,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const rows = summary.orders
     .map((o) => {
-      const itemsList = o.items.map((i) => `${escapeHtml(i.name)} — ${money(i.price)}`).join(", ");
+      const itemsList = o.items
+        .map((i) => {
+          const qtyPart = i.quantity > 1 ? ` × ${i.quantity}` : "";
+          return `${escapeHtml(i.name)}${qtyPart} — ${money(i.price * i.quantity)}`;
+        })
+        .join(", ");
       return `<tr>
         <td>#${o.id}</td>
         <td>${itemsList}</td>
@@ -43,6 +48,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
     .join("\n");
 
+  const breakdownRows = summary.productBreakdown
+    .map(
+      (p) => `<tr>
+        <td>${escapeHtml(p.name)}</td>
+        <td>${p.quantity}</td>
+        <td>${money(p.revenue)}</td>
+      </tr>`
+    )
+    .join("\n");
+
   const html = `<!doctype html>
 <html lang="ru">
 <head>
@@ -52,6 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 <style>
   body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
   h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
   .stats { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 1rem 0 1.5rem; }
   .stat { background: #f4f4f5; border-radius: 8px; padding: 0.75rem 1rem; }
   .stat b { display: block; font-size: 1.2rem; }
@@ -75,6 +91,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     <div class="stat">Доставка<b>${money(summary.deliveryTotal)}</b></div>
     <div class="stat">Итого<b>${money(summary.grandTotal)}</b></div>
   </div>
+
+  <h2>Продано по товарам</h2>
+  <table>
+    <thead><tr><th>Товар</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+    <tbody>${breakdownRows || `<tr><td colspan="3">Заказов не было</td></tr>`}</tbody>
+  </table>
+
+  <h2>Заказы</h2>
   <table>
     <thead><tr><th>№</th><th>Товары</th><th>Тип</th><th>Товары, тг</th><th>Доставка</th><th>Итого</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="6">Заказов не было</td></tr>`}</tbody>

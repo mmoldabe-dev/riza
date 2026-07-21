@@ -1,5 +1,5 @@
 import { neon } from "@neondatabase/serverless";
-import { OrderItem, normalizeCatalogKey } from "./parseOrder";
+import { CatalogItem, OrderItem, normalizeCatalogKey } from "./parseOrder";
 
 // Accept whichever env var name the connected Postgres provider ends up using
 // (Vercel's own Postgres storage sets POSTGRES_URL; a manually pasted Neon
@@ -40,6 +40,17 @@ async function createSchema(): Promise<void> {
       PRIMARY KEY (chat_id, name_key)
     );
   `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS drafts (
+      chat_id BIGINT PRIMARY KEY,
+      items JSONB NOT NULL DEFAULT '[]',
+      state TEXT NOT NULL DEFAULT 'picking_product',
+      current_key TEXT,
+      current_quantity INTEGER NOT NULL DEFAULT 1,
+      message_id BIGINT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `;
 }
 
 export function ensureSchema(): Promise<void> {
@@ -51,7 +62,7 @@ export function ensureSchema(): Promise<void> {
 
 export async function upsertCatalogItems(
   chatId: number,
-  items: OrderItem[]
+  items: CatalogItem[]
 ): Promise<void> {
   await ensureSchema();
   for (const item of items) {
@@ -64,12 +75,12 @@ export async function upsertCatalogItems(
   }
 }
 
-export async function getCatalog(chatId: number): Promise<Map<string, OrderItem>> {
+export async function getCatalog(chatId: number): Promise<Map<string, CatalogItem>> {
   await ensureSchema();
   const rows = await sql`
     SELECT name_key, name, price FROM catalog WHERE chat_id = ${chatId};
   `;
-  const map = new Map<string, OrderItem>();
+  const map = new Map<string, CatalogItem>();
   for (const r of rows) {
     map.set(r.name_key, { name: r.name, price: Number(r.price) });
   }
@@ -85,6 +96,11 @@ export interface SavedOrder {
   itemsTotal: number;
   deliveryFee: number;
   total: number;
+}
+
+function normalizeStoredItems(items: OrderItem[]): OrderItem[] {
+  // Defensive default for any pre-existing rows saved before quantity support.
+  return items.map((i) => ({ ...i, quantity: i.quantity ?? 1 }));
 }
 
 export async function insertOrder(params: {
@@ -118,7 +134,7 @@ export async function insertOrder(params: {
     chatId: r.chat_id,
     orderDate: r.order_date,
     isCity: r.is_city,
-    items: r.items,
+    items: normalizeStoredItems(r.items),
     itemsTotal: Number(r.items_total),
     deliveryFee: Number(r.delivery_fee),
     total: Number(r.total),
@@ -141,11 +157,17 @@ export async function deleteLastOrder(chatId: number): Promise<SavedOrder | null
     chatId: r.chat_id,
     orderDate: r.order_date,
     isCity: r.is_city,
-    items: r.items,
+    items: normalizeStoredItems(r.items),
     itemsTotal: Number(r.items_total),
     deliveryFee: Number(r.delivery_fee),
     total: Number(r.total),
   };
+}
+
+export interface ProductBreakdownRow {
+  name: string;
+  quantity: number;
+  revenue: number;
 }
 
 export interface DaySummary {
@@ -157,6 +179,7 @@ export interface DaySummary {
   deliveryTotal: number;
   grandTotal: number;
   orders: SavedOrder[];
+  productBreakdown: ProductBreakdownRow[];
 }
 
 export async function getDaySummary(dateKey: string): Promise<DaySummary> {
@@ -173,7 +196,7 @@ export async function getDaySummary(dateKey: string): Promise<DaySummary> {
     chatId: r.chat_id,
     orderDate: r.order_date,
     isCity: r.is_city,
-    items: r.items,
+    items: normalizeStoredItems(r.items),
     itemsTotal: Number(r.items_total),
     deliveryFee: Number(r.delivery_fee),
     total: Number(r.total),
@@ -182,6 +205,22 @@ export async function getDaySummary(dateKey: string): Promise<DaySummary> {
   const cityCount = orders.filter((o) => o.isCity).length;
   const itemsTotal = orders.reduce((s, o) => s + o.itemsTotal, 0);
   const deliveryTotal = orders.reduce((s, o) => s + o.deliveryFee, 0);
+
+  const breakdownMap = new Map<string, ProductBreakdownRow>();
+  for (const order of orders) {
+    for (const item of order.items) {
+      const key = normalizeCatalogKey(item.name);
+      const existing = breakdownMap.get(key);
+      const revenue = item.price * item.quantity;
+      if (existing) {
+        existing.quantity += item.quantity;
+        existing.revenue += revenue;
+      } else {
+        breakdownMap.set(key, { name: item.name, quantity: item.quantity, revenue });
+      }
+    }
+  }
+  const productBreakdown = [...breakdownMap.values()].sort((a, b) => b.quantity - a.quantity);
 
   return {
     orderDate: dateKey,
@@ -192,5 +231,61 @@ export async function getDaySummary(dateKey: string): Promise<DaySummary> {
     deliveryTotal,
     grandTotal: itemsTotal + deliveryTotal,
     orders,
+    productBreakdown,
   };
+}
+
+export type DraftState = "picking_product" | "picking_quantity" | "picking_city";
+
+export interface Draft {
+  items: OrderItem[];
+  state: DraftState;
+  currentKey: string | null;
+  currentQuantity: number;
+  messageId: number | null;
+}
+
+export async function getDraft(chatId: number): Promise<Draft | null> {
+  await ensureSchema();
+  const rows = await sql`
+    SELECT items, state, current_key, current_quantity, message_id
+    FROM drafts WHERE chat_id = ${chatId};
+  `;
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  return {
+    items: normalizeStoredItems(r.items),
+    state: r.state,
+    currentKey: r.current_key,
+    currentQuantity: r.current_quantity,
+    messageId: r.message_id,
+  };
+}
+
+export async function saveDraft(chatId: number, draft: Draft): Promise<void> {
+  await ensureSchema();
+  await sql`
+    INSERT INTO drafts (chat_id, items, state, current_key, current_quantity, message_id, updated_at)
+    VALUES (
+      ${chatId},
+      ${JSON.stringify(draft.items)}::jsonb,
+      ${draft.state},
+      ${draft.currentKey},
+      ${draft.currentQuantity},
+      ${draft.messageId},
+      now()
+    )
+    ON CONFLICT (chat_id) DO UPDATE SET
+      items = excluded.items,
+      state = excluded.state,
+      current_key = excluded.current_key,
+      current_quantity = excluded.current_quantity,
+      message_id = excluded.message_id,
+      updated_at = now();
+  `;
+}
+
+export async function clearDraft(chatId: number): Promise<void> {
+  await ensureSchema();
+  await sql`DELETE FROM drafts WHERE chat_id = ${chatId};`;
 }

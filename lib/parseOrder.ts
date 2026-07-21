@@ -1,6 +1,10 @@
-export interface OrderItem {
+export interface CatalogItem {
   name: string;
   price: number;
+}
+
+export interface OrderItem extends CatalogItem {
+  quantity: number;
 }
 
 export interface ParsedOrder {
@@ -37,8 +41,12 @@ export function normalizeCatalogKey(name: string): string {
 // mistaken for part of the price — the price is always the final, space-free digit run.
 const ITEM_LINE = /^(.+\S)[\s:—-]+(\d+)\s*(?:тг|тенге|kzt|₸)?$/iu;
 
-/** Parses a single "Название цена" line into an item, or null if it doesn't match that shape. */
-export function parseNamePriceLine(line: string): OrderItem | null {
+// Trailing quantity marker, e.g. "x3", "х2" (Cyrillic х), "*4". Only applies to order lines,
+// never to catalog price definitions.
+const QUANTITY_SUFFIX = /^(.*\S)\s*[xх*]\s*(\d+)$/iu;
+
+/** Parses a single "Название цена" line into a catalog item, or null if it doesn't match that shape. */
+export function parseNamePriceLine(line: string): CatalogItem | null {
   const m = line.match(ITEM_LINE);
   if (!m) return null;
   const name = m[1].trim();
@@ -47,9 +55,37 @@ export function parseNamePriceLine(line: string): OrderItem | null {
   return { name, price };
 }
 
+/** Parses one order line: strips an optional "x<n>" quantity suffix, then resolves the
+ * remainder against the catalog (exact name match) or as an explicit "Название цена". */
+export function parseOrderLine(
+  line: string,
+  catalog: Map<string, CatalogItem>
+): OrderItem | null {
+  let remainder = line;
+  let quantity = 1;
+
+  const qm = line.match(QUANTITY_SUFFIX);
+  if (qm) {
+    const n = Number(qm[2]);
+    if (Number.isFinite(n) && n > 0) {
+      remainder = qm[1].trim();
+      quantity = n;
+    }
+  }
+
+  const fromCatalog = catalog.get(normalizeCatalogKey(remainder));
+  if (fromCatalog) {
+    return { ...fromCatalog, quantity };
+  }
+
+  const parsed = parseNamePriceLine(remainder);
+  if (!parsed) return null;
+  return { ...parsed, quantity };
+}
+
 export function parseOrderMessage(
   text: string,
-  catalog: Map<string, OrderItem> = new Map()
+  catalog: Map<string, CatalogItem> = new Map()
 ): ParseResult {
   const rawLines = text
     .split("\n")
@@ -90,17 +126,11 @@ export function parseOrderMessage(
 
   const items: OrderItem[] = [];
   for (const line of itemLines) {
-    const fromCatalog = catalog.get(normalizeCatalogKey(line));
-    if (fromCatalog) {
-      items.push(fromCatalog);
-      continue;
-    }
-
-    const item = parseNamePriceLine(line);
+    const item = parseOrderLine(line, catalog);
     if (!item) {
       return {
         ok: false,
-        error: `Не удалось распознать строку: «${line}». Формат: «Название цена», например «Кроссовки 15000», либо название товара из сохранённого прайса.`,
+        error: `Не удалось распознать строку: «${line}». Формат: «Название цена» (можно добавить «x3» для количества), например «Кроссовки 15000 x2», либо название товара из сохранённого прайса.`,
       };
     }
     items.push(item);
