@@ -1,5 +1,14 @@
-import { sql } from "@vercel/postgres";
+import { createPool } from "@vercel/postgres";
 import { OrderItem } from "./parseOrder";
+
+// Accept whichever env var name the connected Postgres provider ends up using
+// (Vercel's own Postgres storage sets POSTGRES_URL; a manually pasted Neon
+// connection string is usually called DATABASE_URL).
+const connectionString =
+  process.env.POSTGRES_URL ?? process.env.DATABASE_URL;
+
+const pool = createPool({ connectionString });
+const sql = pool.sql;
 
 let schemaReady: Promise<void> | null = null;
 
