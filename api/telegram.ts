@@ -41,29 +41,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const debug = await routeMessage(chatId, text.trim());
-    res.status(200).json({ ok: true, debug });
-    return;
+    await routeMessage(chatId, text.trim());
   } catch (err) {
     console.error(err);
     await sendMessage(chatId, "⚠️ Произошла ошибка. Попробуйте ещё раз.");
-    res.status(200).json({ ok: false, error: String(err) });
-    return;
   }
+
+  res.status(200).send("ok");
 }
 
-async function routeMessage(chatId: number, text: string): Promise<unknown> {
+async function routeMessage(chatId: number, text: string): Promise<void> {
   const lower = text.toLowerCase();
 
   if (lower === "/start" || lower === "/help") {
     await sendMessage(chatId, HELP_TEXT);
-    return { step: "help" };
+    return;
   }
 
   if (lower === "/today" || lower === "сегодня") {
     const summary = await getDaySummary(todayDateKey());
     await sendMessage(chatId, formatDaySummary(summary));
-    return { step: "today", summary };
+    return;
   }
 
   if (lower.startsWith("/date") || lower.startsWith("/итоги")) {
@@ -74,17 +72,17 @@ async function routeMessage(chatId: number, text: string): Promise<unknown> {
         chatId,
         "Не понял дату. Формат: /date 21.07.2026"
       );
-      return { step: "date-invalid", arg };
+      return;
     }
     const summary = await getDaySummary(dateKey);
     await sendMessage(chatId, formatDaySummary(summary));
-    return { step: "date", dateKey, summary };
+    return;
   }
 
   if (lower === "/prices" || lower === "/price_list") {
     const catalog = await getCatalog(chatId);
     await sendMessage(chatId, formatCatalogList(catalog));
-    return { step: "prices", catalog: [...catalog.entries()] };
+    return;
   }
 
   if (lower.startsWith("/price")) {
@@ -98,11 +96,11 @@ async function routeMessage(chatId: number, text: string): Promise<unknown> {
     const parsed = parseCatalogUpdate(body);
     if (!parsed.ok) {
       await sendMessage(chatId, `❗ ${parsed.error}`);
-      return { step: "price-parse-failed", error: parsed.error, body };
+      return;
     }
     await upsertCatalogItems(chatId, parsed.items);
     await sendMessage(chatId, formatCatalogSaved(parsed.items));
-    return { step: "price-saved", items: parsed.items };
+    return;
   }
 
   if (lower === "/undo") {
@@ -115,14 +113,14 @@ async function routeMessage(chatId: number, text: string): Promise<unknown> {
         `🗑 Последний заказ удалён (итого был ${Math.round(removed.total).toLocaleString("ru-RU")} тг, за ${formatDateKeyRu(removed.orderDate)}).`
       );
     }
-    return { step: "undo", removed };
+    return;
   }
 
   const catalog = await getCatalog(chatId);
   const parsed = parseOrderMessage(text, catalog);
   if (!parsed.ok) {
     await sendMessage(chatId, `❗ ${parsed.error}\n\nОтправьте /help для примера формата.`);
-    return { step: "order-parse-failed", error: parsed.error, text };
+    return;
   }
 
   const { items, isCity } = parsed.order;
@@ -130,7 +128,7 @@ async function routeMessage(chatId: number, text: string): Promise<unknown> {
   const fee = deliveryFee(isCity);
   const total = itemsTotal + fee;
 
-  const saved = await insertOrder({
+  await insertOrder({
     chatId,
     orderDate: todayDateKey(),
     isCity,
@@ -145,6 +143,4 @@ async function routeMessage(chatId: number, text: string): Promise<unknown> {
     chatId,
     formatOrderConfirmation({ items, itemsTotal, deliveryFee: fee, total, isCity })
   );
-
-  return { step: "order-saved", saved };
 }
