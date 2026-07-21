@@ -45,6 +45,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (err) {
     console.error(err);
     await sendMessage(chatId, "⚠️ Произошла ошибка. Попробуйте ещё раз.");
+    res.status(200).json({ ok: false, error: String(err) });
+    return;
   }
 
   res.status(200).send("ok");
