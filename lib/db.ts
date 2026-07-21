@@ -1,5 +1,5 @@
 import { createPool } from "@vercel/postgres";
-import { OrderItem } from "./parseOrder";
+import { OrderItem, normalizeCatalogKey } from "./parseOrder";
 
 // Accept whichever env var name the connected Postgres provider ends up using
 // (Vercel's own Postgres storage sets POSTGRES_URL; a manually pasted Neon
@@ -12,24 +12,65 @@ const sql = pool.sql;
 
 let schemaReady: Promise<void> | null = null;
 
+async function createSchema(): Promise<void> {
+  await sql`
+    CREATE TABLE IF NOT EXISTS orders (
+      id BIGSERIAL PRIMARY KEY,
+      chat_id BIGINT NOT NULL,
+      order_date DATE NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      is_city BOOLEAN NOT NULL,
+      items JSONB NOT NULL,
+      items_total NUMERIC NOT NULL,
+      delivery_fee NUMERIC NOT NULL,
+      total NUMERIC NOT NULL,
+      raw_text TEXT
+    );
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS catalog (
+      chat_id BIGINT NOT NULL,
+      name_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      price NUMERIC NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (chat_id, name_key)
+    );
+  `;
+}
+
 export function ensureSchema(): Promise<void> {
   if (!schemaReady) {
-    schemaReady = sql`
-      CREATE TABLE IF NOT EXISTS orders (
-        id BIGSERIAL PRIMARY KEY,
-        chat_id BIGINT NOT NULL,
-        order_date DATE NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        is_city BOOLEAN NOT NULL,
-        items JSONB NOT NULL,
-        items_total NUMERIC NOT NULL,
-        delivery_fee NUMERIC NOT NULL,
-        total NUMERIC NOT NULL,
-        raw_text TEXT
-      );
-    `.then(() => undefined);
+    schemaReady = createSchema();
   }
   return schemaReady;
+}
+
+export async function upsertCatalogItems(
+  chatId: number,
+  items: OrderItem[]
+): Promise<void> {
+  await ensureSchema();
+  for (const item of items) {
+    await sql`
+      INSERT INTO catalog (chat_id, name_key, name, price, updated_at)
+      VALUES (${chatId}, ${normalizeCatalogKey(item.name)}, ${item.name}, ${item.price}, now())
+      ON CONFLICT (chat_id, name_key)
+      DO UPDATE SET name = excluded.name, price = excluded.price, updated_at = now();
+    `;
+  }
+}
+
+export async function getCatalog(chatId: number): Promise<Map<string, OrderItem>> {
+  await ensureSchema();
+  const { rows } = await sql`
+    SELECT name_key, name, price FROM catalog WHERE chat_id = ${chatId};
+  `;
+  const map = new Map<string, OrderItem>();
+  for (const r of rows) {
+    map.set(r.name_key, { name: r.name, price: Number(r.price) });
+  }
+  return map;
 }
 
 export interface SavedOrder {

@@ -1,5 +1,6 @@
 import { DaySummary } from "./db";
 import { formatDateKeyRu } from "./date";
+import { OrderItem } from "./parseOrder";
 
 function money(n: number): string {
   return `${Math.round(n).toLocaleString("ru-RU")} тг`;
@@ -15,10 +16,14 @@ export const HELP_TEXT = `Привет! Я считаю заказы и прод
 
 Доставка добавится к сумме автоматически: 1500 тг по городу, 2000 тг за городом.
 
+Если товар есть в сохранённом прайсе (см. /price), можно писать просто его название без цены — цена подставится сама. Указанная вручную цена всегда важнее цены из прайса.
+
 <b>Команды:</b>
 /today — итоги за сегодня
 /date 21.07.2026 — итоги за конкретную дату
 /undo — удалить последний добавленный заказ
+/price — сохранить/обновить прайс-лист (каждая строка «Название цена»)
+/prices — показать сохранённый прайс-лист
 /help — эта справка`;
 
 export function formatOrderConfirmation(params: {
@@ -35,6 +40,21 @@ export function formatOrderConfirmation(params: {
     `Доставка (${params.isCity ? "город" : "не город"}): ${money(params.deliveryFee)}`,
     `<b>Итого: ${money(params.total)}</b>`,
   ].join("\n");
+}
+
+export function formatCatalogSaved(items: OrderItem[]): string {
+  const lines = items.map((i) => `• ${i.name} — ${money(i.price)}`);
+  return ["✅ Прайс сохранён", ...lines].join("\n");
+}
+
+export function formatCatalogList(catalog: Map<string, OrderItem>): string {
+  if (catalog.size === 0) {
+    return "Прайс пуст. Добавьте его командой /price, например:\n/price\nWaka 10 13000\nRif 15000";
+  }
+  const lines = [...catalog.values()]
+    .sort((a, b) => a.name.localeCompare(b.name, "ru"))
+    .map((i) => `• ${i.name} — ${money(i.price)}`);
+  return ["💰 Прайс-лист", ...lines].join("\n");
 }
 
 export function formatDaySummary(summary: DaySummary): string {

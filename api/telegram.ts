@@ -1,10 +1,23 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { sendMessage, TelegramUpdate } from "../lib/telegram";
 import { parseOrderMessage } from "../lib/parseOrder";
+import { parseCatalogUpdate } from "../lib/catalog";
 import { deliveryFee } from "../lib/pricing";
-import { insertOrder, deleteLastOrder, getDaySummary } from "../lib/db";
+import {
+  insertOrder,
+  deleteLastOrder,
+  getDaySummary,
+  upsertCatalogItems,
+  getCatalog,
+} from "../lib/db";
 import { todayDateKey, parseDateInput, formatDateKeyRu } from "../lib/date";
-import { HELP_TEXT, formatOrderConfirmation, formatDaySummary } from "../lib/format";
+import {
+  HELP_TEXT,
+  formatOrderConfirmation,
+  formatDaySummary,
+  formatCatalogSaved,
+  formatCatalogList,
+} from "../lib/format";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
@@ -66,6 +79,30 @@ async function routeMessage(chatId: number, text: string): Promise<void> {
     return;
   }
 
+  if (lower === "/prices" || lower === "/price_list") {
+    const catalog = await getCatalog(chatId);
+    await sendMessage(chatId, formatCatalogList(catalog));
+    return;
+  }
+
+  if (lower.startsWith("/price")) {
+    const lines = text.split("\n");
+    const inlineRest = lines[0].replace(/^\/\S+\s*/, "");
+    const body = [inlineRest, ...lines.slice(1)]
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0)
+      .join("\n");
+
+    const parsed = parseCatalogUpdate(body);
+    if (!parsed.ok) {
+      await sendMessage(chatId, `❗ ${parsed.error}`);
+      return;
+    }
+    await upsertCatalogItems(chatId, parsed.items);
+    await sendMessage(chatId, formatCatalogSaved(parsed.items));
+    return;
+  }
+
   if (lower === "/undo") {
     const removed = await deleteLastOrder(chatId);
     if (!removed) {
@@ -79,7 +116,8 @@ async function routeMessage(chatId: number, text: string): Promise<void> {
     return;
   }
 
-  const parsed = parseOrderMessage(text);
+  const catalog = await getCatalog(chatId);
+  const parsed = parseOrderMessage(text, catalog);
   if (!parsed.ok) {
     await sendMessage(chatId, `❗ ${parsed.error}\n\nОтправьте /help для примера формата.`);
     return;
